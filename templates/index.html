@@ -1,0 +1,177 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Netflix Data Explorer</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link href="https://fonts.googleapis.com/css2?family=Bebas+Neue&family=DM+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="/static/css/style.css">
+</head>
+<body>
+    <!-- API Key (injected by Flask) -->
+    <script>window.__API_KEY__ = "{{ api_key }}";</script>
+
+    <!-- ─── Header ──────────────────────────────────────────── -->
+    <header class="header">
+        <div class="header-left">
+            <h1 class="logo">NETFLIX <span class="logo-sub">Explorer</span></h1>
+            <nav class="nav-tabs">
+                <button class="nav-tab active" data-view="browse">Browse</button>
+                <button class="nav-tab" data-view="stats">Statistics</button>
+                <button class="nav-tab" data-view="analysis">Analysis</button>
+            </nav>
+        </div>
+        <div class="header-right">
+            <div class="search-box">
+                <svg class="search-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/>
+                </svg>
+                <input type="text" id="searchInput" placeholder="Search titles, directors, cast..." autocomplete="off">
+            </div>
+            <a href="/logout" class="logout-btn">Logout</a>
+        </div>
+    </header>
+
+    <main class="main">
+        <!-- ─── Browse View ─────────────────────────────────── -->
+        <section id="browseView" class="view active">
+            <!-- Filter Bar -->
+            <div class="filter-bar">
+                <div class="filter-group">
+                    <select id="filterType" class="filter-select">
+                        <option value="">All Types</option>
+                    </select>
+                    <select id="filterRating" class="filter-select">
+                        <option value="">All Ratings</option>
+                    </select>
+                    <select id="filterGenre" class="filter-select">
+                        <option value="">All Genres</option>
+                    </select>
+                    <select id="filterCountry" class="filter-select">
+                        <option value="">All Countries</option>
+                    </select>
+                    <div class="year-range">
+                        <input type="number" id="filterYearMin" placeholder="Year from" class="filter-input">
+                        <span class="year-sep">-</span>
+                        <input type="number" id="filterYearMax" placeholder="Year to" class="filter-input">
+                    </div>
+                </div>
+                <div class="filter-actions">
+                    <span id="resultsCount" class="results-count"></span>
+                    <button id="exportPdfBtn" class="export-btn">
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/>
+                        </svg>
+                        Export PDF
+                    </button>
+                    <button id="clearFiltersBtn" class="clear-btn">Clear</button>
+                </div>
+            </div>
+
+            <!-- Title Grid -->
+            <div id="titleGrid" class="title-grid"></div>
+
+            <!-- Pagination -->
+            <div id="pagination" class="pagination"></div>
+        </section>
+
+        <!-- ─── Stats View ──────────────────────────────────── -->
+        <section id="statsView" class="view">
+            <div id="statsSummary" class="stats-summary"></div>
+            <div class="charts-grid">
+                <div class="chart-card">
+                    <h3 class="chart-title">Type Distribution</h3>
+                    <canvas id="chartTypeDonut"></canvas>
+                </div>
+                <div class="chart-card">
+                    <h3 class="chart-title">Titles by Release Year</h3>
+                    <canvas id="chartByYear"></canvas>
+                </div>
+                <div class="chart-card">
+                    <h3 class="chart-title">Rating Distribution</h3>
+                    <canvas id="chartByRating"></canvas>
+                </div>
+                <div class="chart-card">
+                    <h3 class="chart-title">Top 10 Countries</h3>
+                    <canvas id="chartByCountry"></canvas>
+                </div>
+                <div class="chart-card">
+                    <h3 class="chart-title">Top 10 Genres</h3>
+                    <canvas id="chartByGenre"></canvas>
+                </div>
+                <div class="chart-card">
+                    <h3 class="chart-title">Titles Added Over Time</h3>
+                    <canvas id="chartTimeline"></canvas>
+                </div>
+            </div>
+        </section>
+
+        <!-- ─── Analysis View ───────────────────────────────── -->
+        <section id="analysisView" class="view">
+            <!-- Comparison selector -->
+            <div class="analysis-controls">
+                <h2 class="analysis-title">Year-over-Year Analysis</h2>
+                <div class="comparison-picker">
+                    <label>Compare:</label>
+                    <select id="compareYear1" class="filter-select"></select>
+                    <span class="year-sep">vs</span>
+                    <select id="compareYear2" class="filter-select"></select>
+                    <button id="compareBtn" class="export-btn">Compare</button>
+                </div>
+            </div>
+
+            <!-- Comparison cards -->
+            <div id="comparisonCards" class="comparison-cards"></div>
+
+            <!-- Analysis charts -->
+            <div class="charts-grid">
+                <div class="chart-card">
+                    <h3 class="chart-title">Movies vs TV Shows Trend</h3>
+                    <canvas id="chartTypeShare"></canvas>
+                </div>
+                <div class="chart-card">
+                    <h3 class="chart-title">YoY Growth Rate</h3>
+                    <canvas id="chartYoYGrowth"></canvas>
+                </div>
+                <div class="chart-card">
+                    <h3 class="chart-title">Genre Evolution (Top 5)</h3>
+                    <canvas id="chartGenreTrend"></canvas>
+                </div>
+                <div class="chart-card">
+                    <h3 class="chart-title">Avg Movie Duration Trend</h3>
+                    <canvas id="chartDuration"></canvas>
+                </div>
+                <div class="chart-card">
+                    <h3 class="chart-title">Country Production Trend</h3>
+                    <canvas id="chartCountryTrend"></canvas>
+                </div>
+                <div class="chart-card">
+                    <h3 class="chart-title">Rating Shift Over Years</h3>
+                    <canvas id="chartRatingShift"></canvas>
+                </div>
+            </div>
+        </section>
+    </main>
+
+    <!-- ─── Detail Modal ────────────────────────────────────── -->
+    <div id="detailModal" class="modal-overlay" hidden>
+        <div class="modal-card">
+            <button class="modal-close" id="modalClose">&times;</button>
+            <div class="modal-accent"></div>
+            <div id="modalContent" class="modal-content"></div>
+        </div>
+    </div>
+
+    <!-- ─── Footer ──────────────────────────────────────────── -->
+    <footer class="footer">
+        <p>Netflix Data Explorer &middot; MindX Python K1 Final Project &middot; Powered by Flask + Pandas</p>
+    </footer>
+
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
+    <script src="/static/js/api.js"></script>
+    <script src="/static/js/components.js"></script>
+    <script src="/static/js/charts.js"></script>
+    <script src="/static/js/app.js"></script>
+</body>
+</html>
