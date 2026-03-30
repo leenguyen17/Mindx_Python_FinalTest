@@ -507,6 +507,10 @@ body {
     animation: fadeIn 0.2s ease;
 }
 
+.modal-overlay[hidden] {
+    display: none !important;
+}
+
 .modal-card {
     position: relative;
     width: 90%;
@@ -679,7 +683,7 @@ body {
 
 .charts-grid {
     display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(480px, 1fr));
+    grid-template-columns: repeat(auto-fit, minmax(340px, 1fr));
     gap: 20px;
     padding-bottom: 32px;
 }
@@ -689,6 +693,24 @@ body {
     border: 1px solid var(--border);
     border-radius: var(--radius-lg);
     padding: 24px;
+    min-height: 0;
+}
+
+.chart-card canvas {
+    width: 100% !important;
+    max-height: 260px;
+}
+
+.charts-grid-3 {
+    grid-template-columns: repeat(3, 1fr);
+}
+
+.charts-grid-3 .chart-card {
+    padding: 28px;
+}
+
+.charts-grid-3 .chart-card canvas {
+    max-height: 320px;
 }
 
 .chart-title {
@@ -791,7 +813,12 @@ body {
     .filter-group { flex-wrap: wrap; }
     .filter-select { max-width: 100%; flex: 1; min-width: 120px; }
     .title-grid { grid-template-columns: 1fr; }
-    .charts-grid { grid-template-columns: 1fr; }
+    .charts-grid { grid-template-columns: 1fr 1fr; }
+    .charts-grid-3 { grid-template-columns: 1fr 1fr; }
+}
+
+@media (max-width: 600px) {
+    .charts-grid, .charts-grid-3 { grid-template-columns: 1fr; }
     .modal-card { width: 95%; max-height: 90vh; }
     .analysis-controls { flex-direction: column; align-items: stretch; }
     .comparison-picker { flex-wrap: wrap; }

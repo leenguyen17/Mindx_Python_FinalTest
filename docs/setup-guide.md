@@ -114,7 +114,7 @@ You should see:
 
 ## Step 7: Open in Browser
 
-Navigate to: **http://localhost:5000**
+Navigate to: **http://localhost:5001**
 
 1. You will see the **Login page**
 2. Enter your username and password (from `.env`)
@@ -150,7 +150,7 @@ Open `presentation/slides.html` directly in your browser. Navigate with:
 | Issue | Solution |
 |-------|----------|
 | `ModuleNotFoundError` | Make sure venv is activated: `source venv/bin/activate` |
-| Port 5000 in use | Change port in `app.py`: `app.run(port=5001)` |
+| Port 5001 in use | Change port in `app.py`: `app.run(port=5002)` |
 | CSV not found | Verify `data/netflix_titles.csv` exists in the project root |
 | Login fails | Check username/password in `.env` file |
 

@@ -42,6 +42,8 @@
         compareYear1: $('#compareYear1'),
         compareYear2: $('#compareYear2'),
         compareBtn: $('#compareBtn'),
+        exportStatsPdfBtn: $('#exportStatsPdfBtn'),
+        exportAnalysisPdfBtn: $('#exportAnalysisPdfBtn'),
     };
 
     // ─── View Switching ──────────────────────────────────
@@ -220,6 +222,80 @@
         window.open(url, '_blank');
     }
 
+    // ─── Visual PDF Export (captures charts as images) ───
+
+    async function exportVisualPdf(viewType) {
+        const btn = viewType === 'stats' ? els.exportStatsPdfBtn : els.exportAnalysisPdfBtn;
+        const origText = btn.innerHTML;
+        btn.innerHTML = 'Generating...';
+        btn.disabled = true;
+
+        try {
+            // Determine which canvases to capture
+            const canvasIds = viewType === 'stats'
+                ? ['chartTypeDonut', 'chartByYear', 'chartByRating', 'chartByCountry', 'chartByGenre', 'chartTimeline']
+                : ['chartTypeShare', 'chartYoYGrowth', 'chartGenreTrend', 'chartDuration', 'chartCountryTrend', 'chartRatingShift'];
+
+            const chartNames = viewType === 'stats'
+                ? ['Type Distribution', 'Titles by Release Year', 'Rating Distribution', 'Top 10 Countries', 'Top 10 Genres', 'Titles Added Over Time']
+                : ['Movies vs TV Shows Trend', 'YoY Growth Rate', 'Genre Evolution (Top 5)', 'Avg Movie Duration Trend', 'Country Production Trend', 'Rating Shift Over Years'];
+
+            const charts = [];
+            for (let i = 0; i < canvasIds.length; i++) {
+                const canvas = document.getElementById(canvasIds[i]);
+                if (canvas) {
+                    // Create a white-background version for PDF readability
+                    const tmpCanvas = document.createElement('canvas');
+                    tmpCanvas.width = canvas.width;
+                    tmpCanvas.height = canvas.height;
+                    const ctx = tmpCanvas.getContext('2d');
+                    ctx.fillStyle = '#ffffff';
+                    ctx.fillRect(0, 0, tmpCanvas.width, tmpCanvas.height);
+                    ctx.drawImage(canvas, 0, 0);
+
+                    charts.push({
+                        name: chartNames[i],
+                        image: tmpCanvas.toDataURL('image/png'),
+                    });
+                }
+            }
+
+            const title = viewType === 'stats' ? 'Statistics Report' : 'Year-over-Year Analysis Report';
+            const summary = viewType === 'stats'
+                ? `Dataset: ${$('#statsSummary')?.querySelector('.stat-value')?.textContent || ''} titles`
+                : `Comparison: ${els.compareYear1.value || '?'} vs ${els.compareYear2.value || '?'}`;
+
+            const res = await fetch('/api/export/visual-pdf', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'X-API-Key': window.__API_KEY__,
+                },
+                body: JSON.stringify({ title, charts, summary }),
+            });
+
+            if (!res.ok) {
+                const err = await res.json().catch(() => ({}));
+                throw new Error(err.error || 'Export failed');
+            }
+
+            // Download the PDF
+            const blob = await res.blob();
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = `netflix_${viewType}_${new Date().toISOString().slice(0, 10)}.pdf`;
+            a.click();
+            URL.revokeObjectURL(url);
+
+        } catch (err) {
+            alert('PDF export failed: ' + err.message);
+        } finally {
+            btn.innerHTML = origText;
+            btn.disabled = false;
+        }
+    }
+
     // ─── Init ────────────────────────────────────────────
 
     async function init() {
@@ -264,6 +340,8 @@
         els.exportPdfBtn.addEventListener('click', onExportPdf);
         els.pagination.addEventListener('click', onPaginationClick);
         els.compareBtn.addEventListener('click', loadComparison);
+        els.exportStatsPdfBtn.addEventListener('click', () => exportVisualPdf('stats'));
+        els.exportAnalysisPdfBtn.addEventListener('click', () => exportVisualPdf('analysis'));
 
         // Modal
         els.modalClose.addEventListener('click', closeModal);

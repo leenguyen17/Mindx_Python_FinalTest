@@ -6,7 +6,7 @@
     <title>Netflix Data Explorer</title>
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link href="https://fonts.googleapis.com/css2?family=Bebas+Neue&family=DM+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="/static/css/style.css">
+    <link rel="stylesheet" href="/static/css/style.css?v=5">
 </head>
 <body>
     <!-- API Key (injected by Flask) -->
@@ -78,6 +78,14 @@
 
         <!-- ─── Stats View ──────────────────────────────────── -->
         <section id="statsView" class="view">
+            <div class="filter-bar" style="justify-content:flex-end">
+                <button id="exportStatsPdfBtn" class="export-btn">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/>
+                    </svg>
+                    Export Stats PDF
+                </button>
+            </div>
             <div id="statsSummary" class="stats-summary"></div>
             <div class="charts-grid">
                 <div class="chart-card">
@@ -118,6 +126,12 @@
                     <span class="year-sep">vs</span>
                     <select id="compareYear2" class="filter-select"></select>
                     <button id="compareBtn" class="export-btn">Compare</button>
+                    <button id="exportAnalysisPdfBtn" class="export-btn" style="background:var(--bg-card);border:1px solid var(--accent);color:var(--accent)">
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/>
+                        </svg>
+                        Export Analysis PDF
+                    </button>
                 </div>
             </div>
 
@@ -125,7 +139,7 @@
             <div id="comparisonCards" class="comparison-cards"></div>
 
             <!-- Analysis charts -->
-            <div class="charts-grid">
+            <div class="charts-grid charts-grid-3">
                 <div class="chart-card">
                     <h3 class="chart-title">Movies vs TV Shows Trend</h3>
                     <canvas id="chartTypeShare"></canvas>

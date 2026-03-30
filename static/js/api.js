@@ -64,5 +64,14 @@ const API = (() => {
             const qs = buildQuery({ ...params, api_key: API_KEY });
             return `/api/export/pdf?${qs}`;
         },
+
+        getExportStatsPdfUrl() {
+            return `/api/export/stats-pdf?api_key=${API_KEY}`;
+        },
+
+        getExportAnalysisPdfUrl(params = {}) {
+            const qs = buildQuery({ ...params, api_key: API_KEY });
+            return `/api/export/analysis-pdf?${qs}`;
+        },
     };
 })();

@@ -55,7 +55,7 @@ cp .env.example .env
 python app.py
 ```
 
-Open **http://localhost:5000** and login.
+Open **http://localhost:5001** and login.
 
 > For detailed setup instructions, see [docs/setup-guide.md](docs/setup-guide.md)
 

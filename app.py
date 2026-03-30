@@ -1,6 +1,7 @@
 """Netflix Data Explorer - Flask Backend API"""
 
 import io
+import base64
 import functools
 from datetime import datetime
 
@@ -162,14 +163,17 @@ def apply_filters(dataframe):
 
 
 def df_to_records(dataframe):
-    """Convert dataframe to list of dicts with NaN replaced by None."""
+    """Convert dataframe to list of dicts with NaN/empty replaced by None."""
     cols = ['show_id', 'type', 'title', 'director', 'cast', 'country',
             'date_added', 'release_year', 'rating', 'duration', 'listed_in', 'description']
-    result = dataframe[cols].copy()
-    result = result.where(pd.notnull(result), None)
-    # Replace empty strings back to None for cleaner JSON
-    result = result.replace('', None)
-    return result.to_dict(orient='records')
+    records = dataframe[cols].to_dict(orient='records')
+    for rec in records:
+        for key, val in rec.items():
+            if val is None or (isinstance(val, float) and pd.isna(val)) or val == '':
+                rec[key] = None
+            elif isinstance(val, (int, float)):
+                rec[key] = int(val) if val == int(val) else val
+    return records
 
 
 # ─── API Routes ───────────────────────────────────────────────────────────────
@@ -401,17 +405,187 @@ def api_analysis():
 def api_export_pdf():
     try:
         filtered = apply_filters(df)
-
-        # Sort
-        sort_by = request.args.get('sort_by', 'date_added')
-        sort_order = request.args.get('sort_order', 'desc')
-        valid_sorts = {'title': 'title', 'release_year': 'release_year', 'date_added': 'date_parsed'}
-        sort_col = valid_sorts.get(sort_by, 'date_parsed')
-        filtered = filtered.sort_values(sort_col, ascending=(sort_order == 'asc'), na_position='last')
-
-        # Limit to 500
         total = len(filtered)
-        export_df = filtered.head(500)
+
+        def safe_text(text):
+            if not text:
+                return ''
+            replacements = {
+                '\u2014': '-', '\u2013': '-', '\u2018': "'", '\u2019': "'",
+                '\u201c': '"', '\u201d': '"', '\u2026': '...', '\u00e9': 'e',
+                '\u00e1': 'a', '\u00ed': 'i', '\u00f3': 'o', '\u00fa': 'u',
+                '\u00f1': 'n', '\u00fc': 'u', '\u00e8': 'e', '\u00e0': 'a',
+            }
+            for k, v in replacements.items():
+                text = text.replace(k, v)
+            return text.encode('latin-1', errors='replace').decode('latin-1')
+
+        # Collect active filters for display
+        filters_applied = []
+        for param in ['type', 'rating', 'genre', 'country', 'year_min', 'year_max', 'search']:
+            val = request.args.get(param, '').strip()
+            if val:
+                filters_applied.append(f'{param}: {val}')
+
+        pdf = FPDF()
+        pdf.set_auto_page_break(auto=True, margin=15)
+
+        # ── Title Page ──
+        pdf.add_page()
+        pdf.set_font('Helvetica', 'B', 28)
+        pdf.ln(50)
+        pdf.cell(0, 15, 'Netflix Data Explorer', align='C', new_x='LMARGIN', new_y='NEXT')
+        pdf.set_font('Helvetica', '', 16)
+        subtitle = 'Filtered Data Analysis' if filters_applied else 'Full Dataset Analysis'
+        pdf.cell(0, 10, subtitle, align='C', new_x='LMARGIN', new_y='NEXT')
+        pdf.ln(10)
+        pdf.set_font('Helvetica', '', 11)
+        pdf.cell(0, 8, f'Generated: {datetime.now().strftime("%Y-%m-%d %H:%M")}', align='C', new_x='LMARGIN', new_y='NEXT')
+        pdf.cell(0, 8, f'Titles analyzed: {total:,}', align='C', new_x='LMARGIN', new_y='NEXT')
+        if filters_applied:
+            pdf.ln(3)
+            pdf.set_font('Helvetica', 'I', 10)
+            pdf.cell(0, 8, safe_text(f'Filters: {" | ".join(filters_applied)}'), align='C', new_x='LMARGIN', new_y='NEXT')
+
+        # ── Page 2: Overview Summary ──
+        pdf.add_page()
+        _pdf_section_title(pdf, 'Overview', safe_text)
+        n_movies = int((filtered['type'] == 'Movie').sum())
+        n_tv = int((filtered['type'] == 'TV Show').sum())
+        movie_pct = round(n_movies / total * 100, 1) if total else 0
+        tv_pct = round(n_tv / total * 100, 1) if total else 0
+        yr_min = int(filtered['release_year'].min()) if total else 0
+        yr_max = int(filtered['release_year'].max()) if total else 0
+        n_countries = filtered['country'].str.split(', ').explode().str.strip().loc[lambda s: s != ''].nunique()
+        n_genres = filtered['listed_in'].str.split(', ').explode().str.strip().nunique()
+
+        pdf.set_font('Helvetica', '', 11)
+        for line in [
+            f'Total Titles: {total:,}',
+            f'Movies: {n_movies:,} ({movie_pct}%)',
+            f'TV Shows: {n_tv:,} ({tv_pct}%)',
+            f'Release Year Range: {yr_min} - {yr_max}',
+            f'Countries Represented: {n_countries}',
+            f'Genres Represented: {n_genres}',
+        ]:
+            pdf.cell(0, 8, line, new_x='LMARGIN', new_y='NEXT')
+        pdf.ln(8)
+
+        # ── Type Breakdown ──
+        _pdf_section_title(pdf, 'Type Distribution', safe_text)
+        _pdf_table(pdf, ['Type', 'Count', '% of Total'],
+                   [['Movie', f'{n_movies:,}', f'{movie_pct}%'],
+                    ['TV Show', f'{n_tv:,}', f'{tv_pct}%']],
+                   [40, 30, 30], safe_text)
+        pdf.ln(8)
+
+        # ── Rating Distribution ──
+        _pdf_section_title(pdf, 'Rating Distribution', safe_text)
+        ratings = filtered['rating'].loc[filtered['rating'] != ''].value_counts().head(10)
+        _pdf_table(pdf, ['Rating', 'Count', '% of Filtered'],
+                   [[r, f'{c:,}', f'{c / total * 100:.1f}%'] for r, c in ratings.items()],
+                   [40, 30, 30], safe_text)
+
+        # ── Page 3: Genres + Countries ──
+        pdf.add_page()
+        _pdf_section_title(pdf, 'Top 10 Genres', safe_text)
+        genres = (
+            filtered['listed_in'].str.split(', ').explode().str.strip()
+            .value_counts().head(10)
+        )
+        _pdf_table(pdf, ['Genre', 'Count', '% of Filtered'],
+                   [[safe_text(g), f'{n:,}', f'{n / total * 100:.1f}%'] for g, n in genres.items()],
+                   [60, 30, 30], safe_text)
+        pdf.ln(8)
+
+        _pdf_section_title(pdf, 'Top 10 Countries', safe_text)
+        countries = (
+            filtered['country'].str.split(', ').explode().str.strip()
+            .loc[lambda s: s != ''].value_counts().head(10)
+        )
+        _pdf_table(pdf, ['Country', 'Count', '% of Filtered'],
+                   [[safe_text(c), f'{n:,}', f'{n / total * 100:.1f}%'] for c, n in countries.items()],
+                   [50, 30, 30], safe_text)
+
+        # ── Page 4: Year Breakdown ──
+        pdf.add_page()
+        _pdf_section_title(pdf, 'Titles by Release Year', safe_text)
+        yearly = filtered['release_year'].value_counts().sort_index()
+        recent = {y: c for y, c in yearly.items() if y >= max(yr_min, yr_max - 14)}
+        prev = None
+        year_rows = []
+        for y, c in recent.items():
+            m = int((filtered[(filtered['release_year'] == y) & (filtered['type'] == 'Movie')].shape[0]))
+            t = int((filtered[(filtered['release_year'] == y) & (filtered['type'] == 'TV Show')].shape[0]))
+            change = ''
+            if prev is not None and prev > 0:
+                change = f'{(c - prev) / prev * 100:+.1f}%'
+            year_rows.append([str(int(y)), f'{c:,}', f'{m:,}', f'{t:,}', change])
+            prev = c
+        _pdf_table(pdf, ['Year', 'Total', 'Movies', 'TV Shows', 'YoY Change'],
+                   year_rows, [22, 22, 22, 22, 25], safe_text)
+        pdf.ln(8)
+
+        # ── Top Directors ──
+        directors = filtered['director'].loc[filtered['director'] != ''].value_counts().head(10)
+        if len(directors) > 0:
+            _pdf_section_title(pdf, 'Top 10 Directors', safe_text)
+            _pdf_table(pdf, ['Director', 'Titles'],
+                       [[safe_text(d), f'{n:,}'] for d, n in directors.items()],
+                       [60, 30], safe_text)
+
+        # ── Page 5: Duration Analysis (movies) ──
+        f_movies = filtered[filtered['type'] == 'Movie'].copy()
+        f_movies['dur_min'] = f_movies['duration'].str.extract(r'(\d+)').astype(float)
+        if len(f_movies) > 0 and f_movies['dur_min'].notna().any():
+            pdf.add_page()
+            _pdf_section_title(pdf, 'Movie Duration Analysis', safe_text)
+            pdf.set_font('Helvetica', '', 11)
+            avg = f_movies['dur_min'].mean()
+            median = f_movies['dur_min'].median()
+            shortest = f_movies.loc[f_movies['dur_min'].idxmin()]
+            longest = f_movies.loc[f_movies['dur_min'].idxmax()]
+            for line in [
+                f'Average Duration: {avg:.0f} min',
+                f'Median Duration: {median:.0f} min',
+                f'Shortest: {safe_text(str(shortest["title"]))} ({int(shortest["dur_min"])} min)',
+                f'Longest: {safe_text(str(longest["title"]))} ({int(longest["dur_min"])} min)',
+            ]:
+                pdf.cell(0, 8, line, new_x='LMARGIN', new_y='NEXT')
+            pdf.ln(6)
+
+            # Duration by year
+            _pdf_section_title(pdf, 'Avg Movie Duration by Year', safe_text)
+            avg_by_year = f_movies.groupby('release_year')['dur_min'].mean()
+            dur_rows = [[str(int(y)), f'{d:.1f} min']
+                        for y, d in avg_by_year.items() if y >= max(yr_min, yr_max - 10) and pd.notna(d)]
+            _pdf_table(pdf, ['Year', 'Avg Duration'], dur_rows, [30, 40], safe_text)
+
+        # Output
+        buf = io.BytesIO()
+        pdf.output(buf)
+        buf.seek(0)
+        filename = f'netflix_analysis_{datetime.now().strftime("%Y%m%d_%H%M%S")}.pdf'
+        return send_file(buf, mimetype='application/pdf', as_attachment=True, download_name=filename)
+
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+# ─── Visual PDF Export (charts as images) ─────────────────────────────────────
+
+@app.route('/api/export/visual-pdf', methods=['POST'])
+@login_required
+def api_export_visual_pdf():
+    """Accepts chart images from the browser and composes them into a PDF."""
+    try:
+        data = request.get_json()
+        if not data:
+            return jsonify({'error': 'No data provided'}), 400
+
+        title = data.get('title', 'Netflix Data Explorer Report')
+        charts = data.get('charts', [])  # [{name, image}] image = base64 data URL
+        summary = data.get('summary', '')
 
         pdf = FPDF()
         pdf.set_auto_page_break(auto=True, margin=15)
@@ -419,66 +593,375 @@ def api_export_pdf():
         # Title page
         pdf.add_page()
         pdf.set_font('Helvetica', 'B', 28)
-        pdf.ln(60)
+        pdf.ln(50)
         pdf.cell(0, 15, 'Netflix Data Explorer', align='C', new_x='LMARGIN', new_y='NEXT')
-        pdf.set_font('Helvetica', '', 14)
-        pdf.cell(0, 10, 'Data Export Report', align='C', new_x='LMARGIN', new_y='NEXT')
+        pdf.set_font('Helvetica', '', 16)
+        safe_title = title.encode('latin-1', errors='replace').decode('latin-1')
+        pdf.cell(0, 10, safe_title, align='C', new_x='LMARGIN', new_y='NEXT')
         pdf.ln(10)
         pdf.set_font('Helvetica', '', 11)
         pdf.cell(0, 8, f'Generated: {datetime.now().strftime("%Y-%m-%d %H:%M")}', align='C', new_x='LMARGIN', new_y='NEXT')
-        pdf.cell(0, 8, f'Total results: {total} | Exported: {len(export_df)}', align='C', new_x='LMARGIN', new_y='NEXT')
+        if summary:
+            safe_summary = summary.encode('latin-1', errors='replace').decode('latin-1')
+            pdf.cell(0, 8, safe_summary, align='C', new_x='LMARGIN', new_y='NEXT')
 
-        # Filter summary
-        filters_applied = []
-        for param in ['type', 'rating', 'genre', 'country', 'year_min', 'year_max', 'search']:
-            val = request.args.get(param, '').strip()
-            if val:
-                filters_applied.append(f'{param}: {val}')
-        if filters_applied:
-            pdf.ln(5)
-            pdf.set_font('Helvetica', 'I', 10)
-            pdf.cell(0, 8, f'Filters: {" | ".join(filters_applied)}', align='C', new_x='LMARGIN', new_y='NEXT')
+        # Chart pages - 2 charts per landscape page
+        for i in range(0, len(charts), 2):
+            pdf.add_page('L')
 
-        # Data table
-        pdf.add_page('L')  # Landscape for table
-        pdf.set_font('Helvetica', 'B', 9)
+            for j in range(2):
+                idx = i + j
+                if idx >= len(charts):
+                    break
 
-        col_widths = [50, 18, 14, 30, 22, 40]
-        headers = ['Title', 'Type', 'Year', 'Rating', 'Duration', 'Country']
+                chart = charts[idx]
+                name = chart.get('name', f'Chart {idx + 1}')
+                image_data = chart.get('image', '')
 
-        # Header row
-        pdf.set_fill_color(229, 9, 20)  # Netflix red
-        pdf.set_text_color(255, 255, 255)
-        for i, header in enumerate(headers):
-            pdf.cell(col_widths[i], 8, header, border=1, fill=True)
-        pdf.ln()
+                # Decode base64 image
+                if ',' in image_data:
+                    image_data = image_data.split(',', 1)[1]
 
-        # Data rows
-        pdf.set_font('Helvetica', '', 8)
-        pdf.set_text_color(0, 0, 0)
-        for _, row in export_df.iterrows():
-            title = str(row['title'])[:30]
-            type_val = str(row['type'])
-            year = str(int(row['release_year']))
-            rating = str(row['rating'])[:15] if row['rating'] else ''
-            duration = str(row['duration'])[:12] if row['duration'] else ''
-            country = str(row['country'])[:25] if row['country'] else ''
+                img_bytes = base64.b64decode(image_data)
+                img_buf = io.BytesIO(img_bytes)
 
-            pdf.cell(col_widths[0], 7, title, border=1)
-            pdf.cell(col_widths[1], 7, type_val, border=1)
-            pdf.cell(col_widths[2], 7, year, border=1)
-            pdf.cell(col_widths[3], 7, rating, border=1)
-            pdf.cell(col_widths[4], 7, duration, border=1)
-            pdf.cell(col_widths[5], 7, country, border=1)
-            pdf.ln()
+                # Position: left half or right half
+                x = 10 if j == 0 else 150
+                y = 15
+
+                # Chart title
+                pdf.set_font('Helvetica', 'B', 11)
+                pdf.set_text_color(0, 0, 0)
+                safe_name = name.encode('latin-1', errors='replace').decode('latin-1')
+                pdf.set_xy(x, y)
+                pdf.cell(130, 8, safe_name)
+
+                # Chart image
+                pdf.image(img_buf, x=x, y=y + 10, w=128, h=80)
 
         # Output
         buf = io.BytesIO()
         pdf.output(buf)
         buf.seek(0)
 
-        filename = f'netflix_export_{datetime.now().strftime("%Y%m%d_%H%M%S")}.pdf'
+        filename = f'netflix_visual_{datetime.now().strftime("%Y%m%d_%H%M%S")}.pdf'
         return send_file(buf, mimetype='application/pdf', as_attachment=True, download_name=filename)
+
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+# ─── Stats PDF Export ─────────────────────────────────────────────────────────
+
+def _pdf_section_title(pdf, text, safe_text_fn):
+    """Render a red section header in the PDF."""
+    pdf.set_font('Helvetica', 'B', 14)
+    pdf.set_text_color(229, 9, 20)
+    pdf.cell(0, 10, safe_text_fn(text), new_x='LMARGIN', new_y='NEXT')
+    pdf.set_text_color(0, 0, 0)
+    pdf.ln(2)
+
+
+def _pdf_table(pdf, headers, rows, col_widths, safe_text_fn):
+    """Render a table with red header row."""
+    pdf.set_font('Helvetica', 'B', 9)
+    pdf.set_fill_color(229, 9, 20)
+    pdf.set_text_color(255, 255, 255)
+    for i, h in enumerate(headers):
+        pdf.cell(col_widths[i], 8, h, border=1, fill=True)
+    pdf.ln()
+    pdf.set_font('Helvetica', '', 8)
+    pdf.set_text_color(0, 0, 0)
+    for row_data in rows:
+        for i, val in enumerate(row_data):
+            pdf.cell(col_widths[i], 7, safe_text_fn(str(val)), border=1)
+        pdf.ln()
+
+
+@app.route('/api/export/stats-pdf')
+@login_required
+@require_api_key
+def api_export_stats_pdf():
+    try:
+        def safe_text(text):
+            if not text:
+                return ''
+            replacements = {
+                '\u2014': '-', '\u2013': '-', '\u2018': "'", '\u2019': "'",
+                '\u201c': '"', '\u201d': '"', '\u2026': '...', '\u00e9': 'e',
+                '\u00e1': 'a', '\u00ed': 'i', '\u00f3': 'o', '\u00fa': 'u',
+                '\u00f1': 'n', '\u00fc': 'u', '\u00e8': 'e', '\u00e0': 'a',
+            }
+            for k, v in replacements.items():
+                text = text.replace(k, v)
+            return text.encode('latin-1', errors='replace').decode('latin-1')
+
+        pdf = FPDF()
+        pdf.set_auto_page_break(auto=True, margin=15)
+
+        # ── Title Page ──
+        pdf.add_page()
+        pdf.set_font('Helvetica', 'B', 28)
+        pdf.ln(50)
+        pdf.cell(0, 15, 'Netflix Data Explorer', align='C', new_x='LMARGIN', new_y='NEXT')
+        pdf.set_font('Helvetica', '', 16)
+        pdf.cell(0, 10, 'Statistics Report', align='C', new_x='LMARGIN', new_y='NEXT')
+        pdf.ln(10)
+        pdf.set_font('Helvetica', '', 11)
+        pdf.cell(0, 8, f'Generated: {datetime.now().strftime("%Y-%m-%d %H:%M")}', align='C', new_x='LMARGIN', new_y='NEXT')
+        pdf.cell(0, 8, f'Dataset: {len(df):,} titles ({int((df["type"] == "Movie").sum()):,} Movies, {int((df["type"] == "TV Show").sum()):,} TV Shows)', align='C', new_x='LMARGIN', new_y='NEXT')
+
+        # ── Overview ──
+        pdf.add_page()
+        _pdf_section_title(pdf, 'Overview', safe_text)
+        pdf.set_font('Helvetica', '', 11)
+        overview = [
+            f'Total Titles: {len(df):,}',
+            f'Movies: {int((df["type"] == "Movie").sum()):,} (69.6%)',
+            f'TV Shows: {int((df["type"] == "TV Show").sum()):,} (30.4%)',
+            f'Year Range: {int(df["release_year"].min())} - {int(df["release_year"].max())}',
+            f'Unique Countries: {len(FILTER_OPTIONS["countries"])}',
+            f'Unique Genres: {len(FILTER_OPTIONS["genres"])}',
+        ]
+        for line in overview:
+            pdf.cell(0, 8, line, new_x='LMARGIN', new_y='NEXT')
+        pdf.ln(8)
+
+        # ── Rating Distribution ──
+        _pdf_section_title(pdf, 'Rating Distribution', safe_text)
+        ratings = df['rating'].loc[df['rating'] != ''].value_counts().head(15)
+        _pdf_table(pdf,
+            ['Rating', 'Count', '% of Total'],
+            [[r, f'{c:,}', f'{c / len(df) * 100:.1f}%'] for r, c in ratings.items()],
+            [40, 30, 30], safe_text)
+        pdf.ln(8)
+
+        # ── Top 10 Countries ──
+        _pdf_section_title(pdf, 'Top 10 Countries', safe_text)
+        countries = (
+            df['country'].str.split(', ').explode().str.strip()
+            .loc[lambda s: s != ''].value_counts().head(10)
+        )
+        _pdf_table(pdf,
+            ['Country', 'Count', '% of Total'],
+            [[c, f'{n:,}', f'{n / len(df) * 100:.1f}%'] for c, n in countries.items()],
+            [50, 30, 30], safe_text)
+
+        # ── Top 10 Genres ──
+        pdf.add_page()
+        _pdf_section_title(pdf, 'Top 10 Genres', safe_text)
+        genres = (
+            df['listed_in'].str.split(', ').explode().str.strip()
+            .value_counts().head(10)
+        )
+        _pdf_table(pdf,
+            ['Genre', 'Count', '% of Total'],
+            [[g, f'{n:,}', f'{n / len(df) * 100:.1f}%'] for g, n in genres.items()],
+            [60, 30, 30], safe_text)
+        pdf.ln(8)
+
+        # ── Titles by Year (last 15 years) ──
+        _pdf_section_title(pdf, 'Titles by Release Year (2007-2021)', safe_text)
+        yearly = df['release_year'].value_counts().sort_index()
+        recent = {y: c for y, c in yearly.items() if y >= 2007}
+        _pdf_table(pdf,
+            ['Year', 'Total', 'Movies', 'TV Shows'],
+            [[str(int(y)),
+              f'{c:,}',
+              f'{int((df[(df["release_year"] == y) & (df["type"] == "Movie")].shape[0])):,}',
+              f'{int((df[(df["release_year"] == y) & (df["type"] == "TV Show")].shape[0])):,}']
+             for y, c in recent.items()],
+            [25, 25, 30, 30], safe_text)
+
+        # Output
+        buf = io.BytesIO()
+        pdf.output(buf)
+        buf.seek(0)
+        return send_file(buf, mimetype='application/pdf', as_attachment=True,
+                         download_name=f'netflix_stats_{datetime.now().strftime("%Y%m%d_%H%M%S")}.pdf')
+
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+# ─── Analysis PDF Export ──────────────────────────────────────────────────────
+
+@app.route('/api/export/analysis-pdf')
+@login_required
+@require_api_key
+def api_export_analysis_pdf():
+    try:
+        def safe_text(text):
+            if not text:
+                return ''
+            replacements = {
+                '\u2014': '-', '\u2013': '-', '\u2018': "'", '\u2019': "'",
+                '\u201c': '"', '\u201d': '"', '\u2026': '...', '\u00e9': 'e',
+                '\u00e1': 'a', '\u00ed': 'i', '\u00f3': 'o', '\u00fa': 'u',
+                '\u00f1': 'n', '\u00fc': 'u', '\u00e8': 'e', '\u00e0': 'a',
+            }
+            for k, v in replacements.items():
+                text = text.replace(k, v)
+            return text.encode('latin-1', errors='replace').decode('latin-1')
+
+        year1 = request.args.get('year1', type=int)
+        year2 = request.args.get('year2', type=int)
+
+        pdf = FPDF()
+        pdf.set_auto_page_break(auto=True, margin=15)
+
+        # ── Title Page ──
+        pdf.add_page()
+        pdf.set_font('Helvetica', 'B', 28)
+        pdf.ln(50)
+        pdf.cell(0, 15, 'Netflix Data Explorer', align='C', new_x='LMARGIN', new_y='NEXT')
+        pdf.set_font('Helvetica', '', 16)
+        pdf.cell(0, 10, 'Year-over-Year Analysis Report', align='C', new_x='LMARGIN', new_y='NEXT')
+        pdf.ln(10)
+        pdf.set_font('Helvetica', '', 11)
+        pdf.cell(0, 8, f'Generated: {datetime.now().strftime("%Y-%m-%d %H:%M")}', align='C', new_x='LMARGIN', new_y='NEXT')
+        if year1 and year2:
+            pdf.cell(0, 8, f'Comparing: {year1} vs {year2}', align='C', new_x='LMARGIN', new_y='NEXT')
+
+        # ── YoY Growth ──
+        pdf.add_page()
+        _pdf_section_title(pdf, 'Year-over-Year Growth', safe_text)
+        yearly = df['release_year'].value_counts().sort_index()
+        prev = None
+        yoy_rows = []
+        for y, c in yearly.items():
+            if y >= 2010:
+                change = ''
+                if prev is not None:
+                    pct = (c - prev) / prev * 100 if prev > 0 else 0
+                    change = f'{pct:+.1f}%'
+                yoy_rows.append([str(int(y)), f'{c:,}', change])
+            prev = c
+        _pdf_table(pdf, ['Year', 'Titles', 'YoY Change'], yoy_rows, [25, 30, 30], safe_text)
+        pdf.ln(8)
+
+        # ── Movies vs TV Shows Share ──
+        _pdf_section_title(pdf, 'Movies vs TV Shows Share by Year', safe_text)
+        type_by_year = df.groupby(['release_year', 'type']).size().unstack(fill_value=0)
+        share_rows = []
+        for y in sorted(type_by_year.index):
+            if y >= 2010:
+                row = type_by_year.loc[y]
+                total = row.sum()
+                m = int(row.get('Movie', 0))
+                t = int(row.get('TV Show', 0))
+                share_rows.append([
+                    str(int(y)), f'{m:,}', f'{m/total*100:.1f}%',
+                    f'{t:,}', f'{t/total*100:.1f}%'
+                ])
+        _pdf_table(pdf, ['Year', 'Movies', 'Movie %', 'TV Shows', 'TV %'],
+                   share_rows, [20, 22, 22, 22, 22], safe_text)
+
+        # ── Avg Movie Duration ──
+        pdf.add_page()
+        _pdf_section_title(pdf, 'Average Movie Duration Trend', safe_text)
+        movies = df[df['type'] == 'Movie'].copy()
+        movies['duration_min'] = movies['duration'].str.extract(r'(\d+)').astype(float)
+        avg_dur = movies.groupby('release_year')['duration_min'].mean()
+        dur_rows = [[str(int(y)), f'{d:.1f} min']
+                    for y, d in avg_dur.items() if y >= 2010 and pd.notna(d)]
+        _pdf_table(pdf, ['Year', 'Avg Duration'], dur_rows, [30, 40], safe_text)
+        pdf.ln(8)
+
+        # ── Top Genres Trend ──
+        _pdf_section_title(pdf, 'Top 5 Genres Trend (Last 7 Years)', safe_text)
+        top_genres = (
+            df['listed_in'].str.split(', ').explode().str.strip()
+            .value_counts().head(5).index.tolist()
+        )
+        max_year = int(df['release_year'].max())
+        genre_years = list(range(max_year - 6, max_year + 1))
+        genre_rows = []
+        for genre in top_genres:
+            row = [safe_text(genre)]
+            for y in genre_years:
+                mask = (df['release_year'] == y) & df['listed_in'].str.contains(genre, case=False, na=False)
+                row.append(str(int(mask.sum())))
+            genre_rows.append(row)
+        genre_widths = [45] + [18] * len(genre_years)
+        _pdf_table(pdf, ['Genre'] + [str(y) for y in genre_years],
+                   genre_rows, genre_widths, safe_text)
+
+        # ── Year Comparison ──
+        if year1 and year2:
+            pdf.add_page()
+            _pdf_section_title(pdf, f'Comparison: {year1} vs {year2}', safe_text)
+
+            def year_data(yr):
+                subset = df[df['release_year'] == yr]
+                return {
+                    'total': len(subset),
+                    'movies': int((subset['type'] == 'Movie').sum()),
+                    'tv_shows': int((subset['type'] == 'TV Show').sum()),
+                    'top_genres': (
+                        subset['listed_in'].str.split(', ').explode().str.strip()
+                        .value_counts().head(5).to_dict()
+                    ),
+                    'top_countries': (
+                        subset['country'].str.split(', ').explode().str.strip()
+                        .loc[lambda s: s != ''].value_counts().head(5).to_dict()
+                    ),
+                    'ratings': subset['rating'].value_counts().head(5).to_dict(),
+                }
+
+            d1, d2 = year_data(year1), year_data(year2)
+
+            # Summary comparison
+            _pdf_table(pdf,
+                ['Metric', str(year1), str(year2), 'Change'],
+                [
+                    ['Total Titles', f'{d1["total"]:,}', f'{d2["total"]:,}',
+                     f'{d2["total"] - d1["total"]:+,}'],
+                    ['Movies', f'{d1["movies"]:,}', f'{d2["movies"]:,}',
+                     f'{d2["movies"] - d1["movies"]:+,}'],
+                    ['TV Shows', f'{d1["tv_shows"]:,}', f'{d2["tv_shows"]:,}',
+                     f'{d2["tv_shows"] - d1["tv_shows"]:+,}'],
+                ],
+                [35, 30, 30, 30], safe_text)
+            pdf.ln(8)
+
+            # Genre comparison
+            _pdf_section_title(pdf, f'Top Genres: {year1} vs {year2}', safe_text)
+            all_genres = set(list(d1['top_genres'].keys()) + list(d2['top_genres'].keys()))
+            genre_comp = [[safe_text(g), str(d1['top_genres'].get(g, 0)),
+                          str(d2['top_genres'].get(g, 0)),
+                          f'{d2["top_genres"].get(g, 0) - d1["top_genres"].get(g, 0):+d}']
+                         for g in sorted(all_genres, key=lambda g: d2['top_genres'].get(g, 0), reverse=True)]
+            _pdf_table(pdf, ['Genre', str(year1), str(year2), 'Change'],
+                       genre_comp, [50, 25, 25, 25], safe_text)
+            pdf.ln(8)
+
+            # Country comparison
+            _pdf_section_title(pdf, f'Top Countries: {year1} vs {year2}', safe_text)
+            all_countries = set(list(d1['top_countries'].keys()) + list(d2['top_countries'].keys()))
+            country_comp = [[safe_text(c), str(d1['top_countries'].get(c, 0)),
+                            str(d2['top_countries'].get(c, 0)),
+                            f'{d2["top_countries"].get(c, 0) - d1["top_countries"].get(c, 0):+d}']
+                           for c in sorted(all_countries, key=lambda c: d2['top_countries'].get(c, 0), reverse=True)]
+            _pdf_table(pdf, ['Country', str(year1), str(year2), 'Change'],
+                       country_comp, [45, 25, 25, 25], safe_text)
+            pdf.ln(8)
+
+            # Rating comparison
+            _pdf_section_title(pdf, f'Rating Distribution: {year1} vs {year2}', safe_text)
+            all_ratings = set(list(d1['ratings'].keys()) + list(d2['ratings'].keys()))
+            rating_comp = [[r, str(d1['ratings'].get(r, 0)), str(d2['ratings'].get(r, 0)),
+                           f'{d2["ratings"].get(r, 0) - d1["ratings"].get(r, 0):+d}']
+                          for r in sorted(all_ratings, key=lambda r: d2['ratings'].get(r, 0), reverse=True)]
+            _pdf_table(pdf, ['Rating', str(year1), str(year2), 'Change'],
+                       rating_comp, [35, 25, 25, 25], safe_text)
+
+        # Output
+        buf = io.BytesIO()
+        pdf.output(buf)
+        buf.seek(0)
+        return send_file(buf, mimetype='application/pdf', as_attachment=True,
+                         download_name=f'netflix_analysis_{datetime.now().strftime("%Y%m%d_%H%M%S")}.pdf')
 
     except Exception as e:
         return jsonify({'error': str(e)}), 500
